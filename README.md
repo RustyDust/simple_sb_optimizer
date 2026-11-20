@@ -59,8 +59,8 @@ The EV sensor's history should cover at least the load history window (option *D
 
 | Option | Default | Notes |
 |---|---|---|
-| Usable battery capacity | from evcc, else 20 kWh | |
-| Minimum / maximum SoC | 10 % / 100 % | Range the optimizer may use. |
+| Usable battery capacity | from evcc, else 20 kWh | Usable capacity on the same scale as the reported SoC (for sonnen: the capacity that 0–100 % USOC covers). |
+| Minimum / maximum SoC | 10 % / 100 % | Range the optimizer may use, on the scale of the SoC evcc reports. For sonnen, evcc reports the user SoC (USOC), which already excludes the manufacturer's reserve. 0 % is therefore safe, and a higher minimum only acts as a buffer for forecast errors. |
 | **Grid charge power** | 3.3 kW | **Must match `maxchargepower` of the battery in evcc** (in kW, e.g. 4600 W → 4.6). evcc doesn't report this value through its API, so it has to be entered here. When the optimizer says "charge now", evcc decides how fast; the optimizer uses this value to work out how many cheap slots to book. Too low: more charge slots are planned than needed (harmless, charging stops at the target). Too high: too few slots are booked and the battery is short when expensive hours begin. |
 | Max. charge power (PV) | 3.3 kW | The battery's rated charge power. Used for how fast surplus PV is stored. |
 | Max. discharge power | 3.3 kW | The battery's rated discharge power. |
