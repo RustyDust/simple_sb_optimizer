@@ -82,7 +82,70 @@ With **Active control** off, the plan is calculated and published but evcc keeps
 
 Other sensors: charge target, planned grid charge (kWh), estimated savings compared with plain self-consumption, PV and load forecast for the next 24 h (with the learned PV correction factors as an attribute).
 
-Once the plans look reasonable, turn on **Active control**. Turning it off hands control back to evcc immediately.
+### Viewing the plan
+
+Paste this into **Developer Tools → Template** to print the whole plan as a readable table:
+
+```jinja
+{% for s in state_attr('sensor.pv_battery_optimizer_planned_battery_mode', 'slots') -%}
+{{ as_local(as_datetime(s.start)).strftime('%a %H:%M') }}  {{ s.mode.ljust(6) }}  price {{ '%.3f' % s.price }}  pv {{ '%.2f' % s.pv }}  load {{ '%.2f' % s.load }}  ev {{ '%.2f' % s.ev }}  soc {{ s.soc }}%
+{% endfor %}
+```
+
+PV, load and EV are kWh per 15-minute slot. `soc` is the battery level expected at the end of the slot.
+
+### Dry run checklist
+
+**1. Is it running?**
+
+- **Sensors:** none of the sensors is `unavailable`.
+- **`planned_at`:** this attribute of "Planned battery mode" updates about every 5 minutes.
+- **Log:** no errors or warnings from `pv_battery_optimizer`.
+
+**2. Are the inputs right?**
+
+- **Battery level:** the first slot's starting level matches what evcc or the sonnen app shows. If it's off, the capacity setting is probably wrong.
+- **Prices:** they match the Tibber/evcc prices for the same 15-minute slots. Before about 13:00–14:00 the plan ends at midnight; after that it runs through the next day.
+- **PV:**
+  - The PV values peak around midday.
+  - "PV forecast next 24h" roughly matches Forecast.Solar's own figures. Until the correction has learned something, it matches exactly (times the PV safety factor).
+- **Load:**
+  - "Load forecast next 24h" is in the range of your usual daily consumption without the EV.
+  - Individual slots look like normal household use (around 0.1–0.3 kWh per slot), with no car-sized spikes.
+  - If you see spikes, the EV energy sensor isn't subtracting properly (see *Why the EV charging sensor is needed*).
+- **EV:** the `ev` column is only non-zero while the car is charging or has an evcc charging plan. When charging starts, the plan is recalculated within about 20 s.
+
+**3. Do the plans make sense?**
+
+- **Charging only when worth it.** The expensive hours must cost more than the cheap price ÷ ~0.9 (round-trip efficiency), plus the wear cost. Otherwise it doesn't charge at all, and on many days that's correct.
+- **Charge target:**
+  - It covers the expensive hours in the plan, not automatically up to 100 %.
+  - Before a sunny day it charges little or nothing.
+  - Before a dark, expensive day it charges more.
+- **Hold before expensive periods:** it may hold the battery during cheap hours, saving it for the expensive ones. If the cheap window is longer than needed for charging, it holds first and charges in the last part of the window.
+- **Stability:** the charge target and plan don't jump around much between recalculations when nothing has changed. The history graphs of "Charge target" and "Planned battery mode" show this.
+- **Savings:** "Estimated savings" is positive but modest, from a few cents to around a euro per day. Much more than that usually points to a wrong input.
+
+**4. Next day: plan versus reality**
+
+This is the most important check. Look at:
+
+- **Battery:** did it run empty before the expensive period ended (charged too little)? Or was it full at midday and exporting PV after grid charging (charged too much)?
+- **Load:** actual consumption compared with the load forecast.
+- **PV:** actual production compared with the forecast.
+
+The `slots` and `schedule` attributes are excluded from the recorder because they're large, so a past plan can't be looked up in the history. Only the sensor states are kept: planned mode, charge target, planned grid charge. To compare plan and reality, copy the template output in the evening (e.g. around 22:00, after the next day's prices are in).
+
+### Turning on Active control
+
+Once the plans look reasonable, turn on **Active control**. Do it at a time when you can watch:
+
+- **evcc:** the battery shows the externally set mode.
+- **`charge`:** the battery charges at `maxchargepower` and switches to `hold` when the target is reached.
+- **`hold`:**
+  - The battery doesn't discharge.
+  - Also note whether it still takes up surplus PV. The optimizer assumes it doesn't.
+- **Turning the switch off:** evcc takes over again immediately.
 
 For problems, filter the HA log for `pv_battery_optimizer`.
 
