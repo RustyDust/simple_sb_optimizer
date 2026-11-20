@@ -60,6 +60,10 @@ class BatteryParams:
     discharge_efficiency: float = 0.95
     wear_cost_per_kwh: float = 0.0  # per kWh (AC) discharged
     soc_step_kwh: float = 0.05  # DP resolution
+    # Minimum benefit (currency per 15 min) a HOLD or CHARGE slot must bring
+    # compared with NORMAL. Avoids switching modes for negligible gains. Only
+    # used for the decision, not included in reported costs.
+    min_benefit: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -223,9 +227,12 @@ def _best_action(
 ) -> tuple[float, Mode, SlotResult]:
     best_c = float("inf")
     best: tuple[Mode, SlotResult] | None = None
+    penalty = p.min_benefit * slot.hours / 0.25
     for mode, cap in actions:
         r = simulate_slot(soc, mode, slot, p, cap)
         c = r.cost + _interp(nxt, r.soc_end, p.soc_step_kwh)
+        if mode is not Mode.NORMAL:
+            c += penalty
         if c < best_c - _TIE_EPS:
             best_c, best = c, (mode, r)
     assert best is not None

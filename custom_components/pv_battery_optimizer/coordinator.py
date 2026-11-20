@@ -29,6 +29,7 @@ from .const import (
     CONF_MAX_CHARGE_KW,
     CONF_MAX_DISCHARGE_KW,
     CONF_MAX_SOC,
+    CONF_MIN_BENEFIT,
     CONF_MIN_SOC,
     CONF_PASSWORD,
     CONF_PV_ENERGY_ENTITY,
@@ -155,6 +156,7 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
             discharge_efficiency=float(o[CONF_DISCHARGE_EFF]),
             wear_cost_per_kwh=float(o[CONF_WEAR_COST]),
             soc_step_kwh=float(o[CONF_SOC_STEP]),
+            min_benefit=float(o[CONF_MIN_BENEFIT]),
         )
 
     # --------------------------------------------------------------- planning

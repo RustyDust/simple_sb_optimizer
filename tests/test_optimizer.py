@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s tests
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sys
@@ -135,6 +136,41 @@ class OptimizeTest(unittest.TestCase):
         plan = optimize(slots, 8.0, PARAMS, terminal_price=0.2)
         self.assertLessEqual(plan.cost, baseline_cost(slots, 8.0, PARAMS, 0.2) + 1e-6)
 
+
+
+class MinBenefitTest(unittest.TestCase):
+    # real plan from 2026-11-20, 21:00-23:45: tiny price differences
+    PRICES = [0.408, 0.400, 0.387, 0.377, 0.395, 0.384, 0.383, 0.377,
+              0.383, 0.375, 0.368, 0.363]
+    LOAD = [0.28] * 4 + [0.31] * 4 + [0.63] * 4
+
+    def plan(self, min_benefit):
+        p = dataclasses.replace(PARAMS, min_benefit=min_benefit)
+        return optimize(make_slots(self.PRICES, load=self.LOAD), 0.155 * 20, p)
+
+    def test_without_min_benefit_flips_between_hold_and_normal(self):
+        modes = [s.mode for s in self.plan(0.0).steps]
+        self.assertIn(Mode.HOLD, modes)
+        self.assertIn(Mode.NORMAL, modes[modes.index(Mode.HOLD):])
+
+    def test_min_benefit_keeps_normal_for_negligible_gains(self):
+        plan = self.plan(0.01)
+        self.assertTrue(all(s.mode is Mode.NORMAL for s in plan.steps))
+
+    def test_reported_cost_excludes_penalty(self):
+        plan = self.plan(0.01)
+        self.assertAlmostEqual(plan.cost, plan.baseline_cost, places=6)
+
+    def test_worthwhile_charging_still_planned(self):
+        p = dataclasses.replace(PARAMS, min_benefit=0.01)
+        plan = optimize(make_slots([0.10] * 24 + [0.40] * 16 + [0.13] * 16), 2.0, p)
+        self.assertGreater(plan.grid_charge_kwh, 4.0)
+        self.assertGreater(plan.savings, 0.5)
+
+    def test_worthwhile_hold_still_planned(self):
+        p = dataclasses.replace(PARAMS, min_benefit=0.01)
+        plan = optimize(make_slots([0.12] * 16 + [0.45] * 16), 6.0, p, terminal_price=0.12)
+        self.assertTrue(all(s.result.battery_discharge == 0 for s in plan.steps[:16]))
 
 class ControlModeTest(unittest.TestCase):
     def test_switches_to_hold_when_target_reached(self):

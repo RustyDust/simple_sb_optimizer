@@ -32,6 +32,7 @@ CONF_EV_POLICY = "ev_discharge_policy"
 CONF_PV_SAFETY = "pv_safety_factor"
 CONF_LOAD_HISTORY_DAYS = "load_history_days"
 CONF_SOC_STEP = "soc_step_kwh"
+CONF_MIN_BENEFIT = "min_benefit"
 
 EV_POLICY_OPTIMIZE = "optimize"
 EV_POLICY_BLOCK = "block"
@@ -52,6 +53,7 @@ DEFAULT_OPTIONS = {
     CONF_PV_SAFETY: 1.0,
     CONF_LOAD_HISTORY_DAYS: 42,
     CONF_SOC_STEP: 0.05,
+    CONF_MIN_BENEFIT: 0.01,
 }
 
 # Integrations providing an "energy" platform with async_get_solar_forecast

@@ -67,6 +67,7 @@ The EV sensor's history should cover at least the load history window (option *D
 | Charge / discharge efficiency | 0.95 / 0.95 | One-way efficiencies. Round trip ≈ their product. |
 | Battery wear cost | 0.03 /kWh | Added per kWh discharged. Grid charging only happens if the price spread covers losses + wear. |
 | Feed-in price (fallback) | 0.08 /kWh | Used if evcc has no feed-in tariff configured. |
+| Minimum benefit for hold/charge | 0.01 per 15 min | `hold` or grid charging is only planned if it saves at least this much per 15 minutes compared with normal operation. Prevents the battery mode from switching back and forth for gains of fractions of a cent. Only affects the decision; costs and savings are reported without it. |
 | EV charge power | 11 kW | Assumed power for evcc charging plans. |
 | Battery discharge while EV charges | Let the optimizer decide | The optimizer's battery mode overrides evcc's "prevent discharge during fast charging". *Let the optimizer decide*: the battery may feed the EV when that is cheaper overall. *Never discharge into the EV*: battery is held whenever an EV is charging. |
 | PV forecast safety factor | 1.0 | Applied on top of the learned correction. Below 1 = plan more conservatively (more grid charging). |

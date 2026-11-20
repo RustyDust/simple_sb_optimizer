@@ -38,6 +38,7 @@ from .const import (
     CONF_MAX_CHARGE_KW,
     CONF_MAX_DISCHARGE_KW,
     CONF_MAX_SOC,
+    CONF_MIN_BENEFIT,
     CONF_MIN_SOC,
     CONF_PASSWORD,
     CONF_PV_ENERGY_ENTITY,
@@ -75,6 +76,7 @@ OPTIONS_SCHEMA = vol.Schema(
         vol.Required(CONF_DISCHARGE_EFF): _num(0.5, 1, 0.01),
         vol.Required(CONF_WEAR_COST): _num(0, 1, 0.001, "/kWh"),
         vol.Required(CONF_FEEDIN_PRICE): _num(0, 1, 0.001, "/kWh"),
+        vol.Required(CONF_MIN_BENEFIT): _num(0, 0.5, 0.001, "/15 min"),
         vol.Required(CONF_EV_CHARGE_KW): _num(1, 50, 0.1, "kW"),
         vol.Required(CONF_EV_POLICY): SelectSelector(
             SelectSelectorConfig(

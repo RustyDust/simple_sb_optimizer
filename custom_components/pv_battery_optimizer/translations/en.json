@@ -56,13 +56,15 @@
           "ev_discharge_policy": "Battery discharge while EV charges",
           "pv_safety_factor": "PV forecast safety factor",
           "load_history_days": "Days of history for load forecast",
-          "soc_step_kwh": "Planning resolution"
+          "soc_step_kwh": "Planning resolution",
+          "min_benefit": "Minimum benefit for hold/charge"
         },
         "data_description": {
           "grid_charge_kw": "Power the battery actually charges with in evcc's charge mode. evcc's sonnen template uses maxchargepower (default 3300 W) for this.",
           "feedin_price": "Used when evcc has no feed-in tariff configured.",
           "pv_safety_factor": "Applied on top of the learned correction. Below 1 = plan more conservatively.",
-          "soc_step_kwh": "SoC step of the optimizer. Smaller = more precise charge amounts but more CPU (0.05 kWh: ~1.5 s per 48 h plan on a fast machine, several seconds on a Raspberry Pi)."
+          "soc_step_kwh": "SoC step of the optimizer. Smaller = more precise charge amounts but more CPU (0.05 kWh: ~1.5 s per 48 h plan on a fast machine, several seconds on a Raspberry Pi).",
+          "min_benefit": "Hold or grid charging is only planned if it saves at least this much per 15 minutes compared with normal operation. Avoids switching modes for negligible gains."
         }
       }
     }
