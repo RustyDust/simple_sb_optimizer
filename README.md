@@ -1,5 +1,8 @@
 # PV Battery Optimizer (Home Assistant custom integration)
 
+[![CI](https://github.com/RustyDust/simple_sb_optimizer/actions/workflows/ci.yml/badge.svg)](https://github.com/RustyDust/simple_sb_optimizer/actions/workflows/ci.yml)
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
+
 Plans when to charge the home battery from the grid, and how much, using
 dynamic prices (from evcc/Tibber), a corrected PV forecast and a load forecast
 built from recorder history. It carries out the plan through evcc's external
@@ -22,7 +25,11 @@ battery mode.
 
 ## Installation
 
-1. Copy `custom_components/pv_battery_optimizer` into the `custom_components` folder of your HA config and restart HA.
+Requires Home Assistant 2026.10 or newer.
+
+1. Install the integration, either way:
+   - **HACS (recommended):** in HACS, open *⋮ → Custom repositories* and add `https://github.com/RustyDust/simple_sb_optimizer` with type *Integration*. Then search for *PV Battery Optimizer*, download it, and restart HA. Updates then show up in HACS.
+   - **Manually:** copy `custom_components/pv_battery_optimizer` into the `custom_components` folder of your HA config and restart HA.
 2. Add the integration (Settings → Devices & services → Add integration → *PV Battery Optimizer*).
 3. Adjust the options (see below). Pay particular attention to **Grid charge power**.
 4. Leave **Active control** off at first (dry run, see below).
@@ -225,6 +232,20 @@ uv pip install -p .venv -r requirements_test.txt
 
 - `tests/test_optimizer.py`, `tests/test_forecast.py`, `tests/test_evaluation.py`: optimizer, forecasting and plan evaluation (pure Python, also run with `python3 -m unittest discover -s tests -p 'test_[ofe]*.py'`).
 - `tests/test_integration.py`: config/options flow, setup, sensors, control loop, evening plan snapshot and diagnostics against a real HA core with mocked evcc API, PV forecast and recorder statistics.
+
+### Continuous integration
+
+On every push to `main` and every pull request, GitHub Actions (`.github/workflows/ci.yml`) runs:
+
+- **Tests:** the test suite above.
+- **hassfest:** HA's validation of `manifest.json`, translations and config flow.
+- **HACS validation:** checks the repository against HACS requirements. The `brands` check is skipped because no logo has been submitted to `home-assistant/brands`.
+
+`hassfest` can also be run locally with Docker:
+
+```
+docker run --rm -v "$PWD":/github/workspace ghcr.io/home-assistant/hassfest
+```
 
 ### HA version used for testing
 

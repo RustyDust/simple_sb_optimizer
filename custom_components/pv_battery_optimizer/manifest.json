@@ -2,12 +2,13 @@
   "domain": "pv_battery_optimizer",
   "name": "PV Battery Optimizer",
   "after_dependencies": ["forecast_solar", "solcast_solar", "open_meteo_solar_forecast"],
-  "codeowners": [],
+  "codeowners": ["@RustyDust"],
   "config_flow": true,
   "dependencies": ["recorder"],
-  "documentation": "https://github.com/",
+  "documentation": "https://github.com/RustyDust/simple_sb_optimizer",
   "integration_type": "service",
   "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/RustyDust/simple_sb_optimizer/issues",
   "requirements": [],
   "version": "0.1.0"
 }
