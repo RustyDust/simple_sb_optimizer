@@ -1,0 +1,108 @@
+# Battery plan chart for the PV Battery Optimizer.
+# Requires the custom card "apexcharts-card" (HACS: "ApexCharts Card").
+# Add to a dashboard via: Edit dashboard -> Add card -> Manual -> paste this.
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Battery plan
+  show_states: false
+graph_span: 48h
+span:
+  start: hour
+now:
+  show: true
+  label: now
+apex_config:
+  chart:
+    height: 380
+  legend:
+    show: true
+  tooltip:
+    shared: true
+yaxis:
+  - id: energy
+    min: 0
+    decimals: 2
+    apex_config:
+      title:
+        text: kWh per 15 min
+  - id: soc
+    opposite: true
+    min: 0
+    max: 100
+    decimals: 0
+    apex_config:
+      title:
+        text: Battery %
+  - id: price
+    opposite: true
+    decimals: 2
+    apex_config:
+      title:
+        text: Price per kWh
+series:
+  - entity: sensor.pv_battery_optimizer_planned_battery_mode
+    name: PV forecast
+    type: area
+    curve: stepline
+    opacity: 0.3
+    yaxis_id: energy
+    color: "#f2b705"
+    show:
+      legend_value: false
+    data_generator: |
+      return entity.attributes.slots.map(s => [new Date(s.start).getTime(), s.pv]);
+  - entity: sensor.pv_battery_optimizer_planned_battery_mode
+    name: House load
+    type: line
+    curve: stepline
+    stroke_width: 2
+    yaxis_id: energy
+    color: "#5b8def"
+    show:
+      legend_value: false
+    data_generator: |
+      return entity.attributes.slots.map(s => [new Date(s.start).getTime(), s.load - s.ev]);
+  - entity: sensor.pv_battery_optimizer_planned_battery_mode
+    name: EV
+    type: column
+    yaxis_id: energy
+    color: "#9b59b6"
+    show:
+      legend_value: false
+    data_generator: |
+      return entity.attributes.slots.map(s => [new Date(s.start).getTime(), s.ev]);
+  - entity: sensor.pv_battery_optimizer_planned_battery_mode
+    name: Grid charging
+    type: column
+    yaxis_id: energy
+    color: "#e74c3c"
+    show:
+      legend_value: false
+    data_generator: |
+      return entity.attributes.slots.map(s => [
+        new Date(s.start).getTime(),
+        s.mode === "charge" ? Math.max(s.grid, 0) : 0,
+      ]);
+  - entity: sensor.pv_battery_optimizer_planned_battery_mode
+    name: Battery (planned)
+    type: line
+    stroke_width: 3
+    yaxis_id: soc
+    color: "#2ecc71"
+    show:
+      legend_value: false
+    # soc is the level at the END of each slot
+    data_generator: |
+      return entity.attributes.slots.map(s => [new Date(s.start).getTime() + 15 * 60 * 1000, s.soc]);
+  - entity: sensor.pv_battery_optimizer_planned_battery_mode
+    name: Price
+    type: line
+    curve: stepline
+    stroke_width: 1
+    yaxis_id: price
+    color: "#7f8c8d"
+    show:
+      legend_value: false
+    data_generator: |
+      return entity.attributes.slots.map(s => [new Date(s.start).getTime(), s.price]);

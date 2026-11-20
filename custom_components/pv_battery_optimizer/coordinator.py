@@ -45,8 +45,12 @@ from .const import (
     MAX_PLAN_AGE,
     PLAN_INTERVAL,
     PV_SAMPLE_RETENTION_DAYS,
+    PLAN_RETENTION_DAYS,
+    PLAN_SNAPSHOT_HOUR,
     PV_SNAPSHOT_HOUR,
+    SOC_LOG_RETENTION_DAYS,
 )
+from .evaluation import evaluate_plan
 from .evcc_api import EvccClient, EvccError, LiveState, Rate, parse_state
 from .forecast import (
     PvSample,
@@ -55,7 +59,7 @@ from .forecast import (
     forecast_load,
     pv_correction_factors,
 )
-from .optimizer import BatteryParams, Mode, Plan, Slot, control_mode, optimize
+from .optimizer import BatteryParams, Mode, Plan, Slot, control_mode, optimize, plan_rows
 from .sources import async_hourly_energy, async_pv_forecast
 
 MAX_HORIZON = timedelta(hours=48)
@@ -113,13 +117,17 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         self._store: Store[dict[str, Any]] = Store(
             hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}"
         )
-        self._pv: dict[str, Any] = {"snapshots": {}, "samples": []}
+        # persisted: PV forecast snapshots + learning samples, evening plan
+        # snapshots and the measured SoC log (for plan vs. reality)
+        self._stored: dict[str, Any] = {}
+        self._last_soc_slot: datetime | None = None
 
     # ------------------------------------------------------------------ setup
 
     async def async_setup(self) -> None:
-        if stored := await self._store.async_load():
-            self._pv = stored
+        self._stored = await self._store.async_load() or {}
+        for key, default in (("snapshots", {}), ("samples", []), ("plans", {}), ("soc_log", {})):
+            self._stored.setdefault(key, default)
 
     @callback
     def async_start_control_loop(self) -> None:
@@ -183,7 +191,7 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
 
         samples = [
             PvSample(dt_util.parse_datetime(ts), fc, act)
-            for ts, fc, act in self._pv["samples"]
+            for ts, fc, act in self._stored["samples"]
         ]
         factors = pv_correction_factors(samples, now, tz)
         safety = float(self.options[CONF_PV_SAFETY])
@@ -200,6 +208,7 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
 
         slots = self._build_slots(now, horizon_end, grid_rates, feedin_rates, pv, load, live)
         plan = await self.hass.async_add_executor_job(optimize, slots, soc_kwh, params)
+        await self._async_snapshot_plan(now, plan, live.soc_percent, horizon_end)
 
         day_end = now + timedelta(hours=24)
         return OptimizerData(
@@ -286,8 +295,8 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         over, compare it with the actual production from the recorder."""
         tz = dt_util.get_default_time_zone()
         local_now = now.astimezone(tz)
-        snapshots: dict[str, dict[str, float]] = self._pv["snapshots"]
-        samples: list[list[Any]] = self._pv["samples"]
+        snapshots: dict[str, dict[str, float]] = self._stored["snapshots"]
+        samples: list[list[Any]] = self._stored["samples"]
         changed = False
 
         tomorrow = local_now.date() + timedelta(days=1)
@@ -322,10 +331,87 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         cutoff = now - timedelta(days=PV_SAMPLE_RETENTION_DAYS)
         kept = [s for s in samples if dt_util.parse_datetime(s[0]) >= cutoff]
         if len(kept) != len(samples):
-            self._pv["samples"] = kept
+            self._stored["samples"] = kept
             changed = True
         if changed:
-            await self._store.async_save(self._pv)
+            await self._store.async_save(self._stored)
+
+    # ------------------------------------------------------- plan vs. reality
+
+    async def _async_snapshot_plan(
+        self, now: datetime, plan: Plan, soc_percent: float, horizon_end: datetime
+    ) -> None:
+        """Keep the first plan after PLAN_SNAPSHOT_HOUR that covers all of
+        tomorrow - it contains tonight's charging decisions."""
+        tz = dt_util.get_default_time_zone()
+        local_now = now.astimezone(tz)
+        tomorrow = local_now.date() + timedelta(days=1)
+        key = tomorrow.isoformat()
+        plans: dict[str, Any] = self._stored["plans"]
+        if local_now.hour < PLAN_SNAPSHOT_HOUR or key in plans:
+            return
+        end_of_tomorrow = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz) + timedelta(days=1)
+        if horizon_end < dt_util.as_utc(end_of_tomorrow):
+            return
+        plans[key] = {
+            "created": now.isoformat(),
+            "soc_start": soc_percent,
+            "options": dict(self.options),
+            "terminal_price": plan.terminal_price,
+            "savings": round(plan.savings, 4),
+            "rows": plan_rows(plan, self.params.capacity_kwh),
+        }
+        for old in sorted(plans)[:-PLAN_RETENTION_DAYS]:
+            del plans[old]
+        await self._store.async_save(self._stored)
+
+    @callback
+    def _log_soc(self, now: datetime) -> None:
+        """Record the measured SoC once per 15-min slot."""
+        if self.live is None or self.live.soc_percent is None:
+            return
+        slot = now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
+        if slot == self._last_soc_slot:
+            return
+        self._last_soc_slot = slot
+        log: dict[str, float] = self._stored["soc_log"]
+        log[slot.isoformat()] = self.live.soc_percent
+        cutoff = (now - timedelta(days=SOC_LOG_RETENTION_DAYS)).isoformat()
+        for ts in [ts for ts in log if ts < cutoff]:
+            del log[ts]
+        self._store.async_delay_save(lambda: self._stored, 300)
+
+    async def async_evaluate_plans(self) -> dict[str, Any]:
+        """Plan vs. reality for all saved evening plans."""
+        now = dt_util.utcnow()
+        data = self.config_entry.data
+        soc_log = {dt_util.parse_datetime(ts): soc for ts, soc in self._stored["soc_log"].items()}
+        result: dict[str, Any] = {}
+        for day, snapshot in sorted(self._stored["plans"].items()):
+            rows = snapshot["rows"]
+            if not rows:
+                continue
+            start = dt_util.parse_datetime(rows[0]["start"]).replace(minute=0, second=0, microsecond=0)
+            end = min(now, dt_util.parse_datetime(rows[-1]["start"]) + timedelta(hours=1))
+            if end <= start:
+                continue
+            pv = await async_hourly_energy(self.hass, data[CONF_PV_ENERGY_ENTITY], start, end)
+            house = await async_hourly_energy(self.hass, data[CONF_HOUSE_ENERGY_ENTITY], start, end)
+            ev: dict[datetime, float] = {}
+            if ev_entity := data.get(CONF_EV_ENERGY_ENTITY):
+                ev = await async_hourly_energy(self.hass, ev_entity, start, end)
+            house_only = {ts: max(0.0, kwh - ev.get(ts, 0.0)) for ts, kwh in house.items()}
+            result[day] = {
+                "created": snapshot["created"],
+                "soc_start": snapshot["soc_start"],
+                "planned_savings": snapshot["savings"],
+                **evaluate_plan(rows, pv, house_only, ev, soc_log, now),
+            }
+        return result
+
+    @property
+    def stored(self) -> dict[str, Any]:
+        return self._stored
 
     # ---------------------------------------------------------------- control
 
@@ -345,6 +431,7 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         except EvccError as err:
             LOGGER.debug("Control tick: %s", err)
             return
+        self._log_soc(dt_util.utcnow())
         if self._ev_charging is not None and self.live.ev_charging != self._ev_charging:
             LOGGER.debug("EV charging state changed, re-planning")
             self._ev_charging = self.live.ev_charging

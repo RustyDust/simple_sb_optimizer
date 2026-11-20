@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from math import ceil
+from typing import Any
 
 
 class Mode(StrEnum):
@@ -296,6 +297,26 @@ def baseline_cost(
         total += r.cost
         soc = r.soc_end
     return total + _terminal_value(soc, p, terminal_price)
+
+
+def plan_rows(plan: Plan, capacity_kwh: float) -> list[dict[str, Any]]:
+    """Compact, JSON serializable per-slot view of a plan.
+
+    ``soc`` is the expected SoC (%) at the end of the slot, energies are kWh
+    per slot, ``grid`` is net grid energy (import positive)."""
+    return [
+        {
+            "start": s.slot.start.isoformat(),
+            "mode": s.mode.value,
+            "price": round(s.slot.import_price, 4),
+            "pv": round(s.slot.pv_kwh, 3),
+            "load": round(s.slot.load_kwh, 3),
+            "ev": round(s.slot.ev_kwh, 3),
+            "soc": round(s.soc_end / capacity_kwh * 100, 1),
+            "grid": round(s.result.grid_import - s.result.grid_export, 3),
+        }
+        for s in plan.steps
+    ]
 
 
 def control_mode(

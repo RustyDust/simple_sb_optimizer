@@ -42,20 +42,20 @@ def evcc_state(soc: float = 30.0, charging: bool = False) -> dict:
     }
 
 
-def grid_rates(now: datetime) -> dict:
-    """24 h of 15-min prices: cheap night (first 6 h), expensive evening."""
+def grid_rates(now: datetime, hours: int = 24) -> dict:
+    """15-min prices: cheap first 6 h, expensive 4 h, then medium."""
     start = now.replace(minute=0, second=0, microsecond=0)
     rates = []
-    for i in range(96):
+    for i in range(hours * 4):
         s = start + timedelta(minutes=15 * i)
         price = 0.10 if i < 24 else (0.45 if i < 40 else 0.25)
         rates.append({"start": _iso(s), "end": _iso(s + timedelta(minutes=15)), "value": price})
     return {"rates": rates}
 
 
-def mock_evcc(aioclient_mock, soc: float = 30.0) -> None:
+def mock_evcc(aioclient_mock, soc: float = 30.0, hours: int = 24) -> None:
     aioclient_mock.get(f"{URL}/api/state", json=evcc_state(soc))
-    aioclient_mock.get(f"{URL}/api/tariff/grid", json=grid_rates(dt_util.utcnow()))
+    aioclient_mock.get(f"{URL}/api/tariff/grid", json=grid_rates(dt_util.utcnow(), hours))
     aioclient_mock.get(f"{URL}/api/tariff/feedin", status=404)
 
 
@@ -112,9 +112,23 @@ async def test_options_flow(hass: HomeAssistant) -> None:
 
 
 @pytest.fixture
-async def setup_entry(hass: HomeAssistant, aioclient_mock):
+def rate_hours() -> int:
+    """Hours of grid prices evcc returns (override via parametrize)."""
+    return 24
+
+
+@pytest.fixture
+def start_time() -> datetime | None:
+    """Frozen start time (override via parametrize), None = real time."""
+    return None
+
+
+@pytest.fixture
+async def setup_entry(hass: HomeAssistant, aioclient_mock, freezer, rate_hours, start_time):
     """Set up the integration with mocked evcc, PV forecast and history."""
-    mock_evcc(aioclient_mock)
+    if start_time is not None:
+        freezer.move_to(start_time)
+    mock_evcc(aioclient_mock, hours=rate_hours)
     aioclient_mock.post(f"{URL}/api/batterymode/normal", json=1)
     aioclient_mock.post(f"{URL}/api/batterymode/hold", json=2)
     aioclient_mock.post(f"{URL}/api/batterymode/charge", json=3)
@@ -133,11 +147,16 @@ async def setup_entry(hass: HomeAssistant, aioclient_mock):
     )
     entry.add_to_hass(hass)
 
-    now = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
-    history = {now - timedelta(hours=h): 1.0 for h in range(1, 24 * 14)}  # 1 kW flat
-
     async def fake_history(hass, statistic_id, start, end):
-        return {} if statistic_id == "sensor.ev_energy" else history
+        """1 kWh per hour for house and PV, no EV."""
+        if statistic_id == "sensor.ev_energy":
+            return {}
+        hour = start.replace(minute=0, second=0, microsecond=0)
+        out = {}
+        while hour < end:
+            out[hour] = 1.0
+            hour += timedelta(hours=1)
+        return out
 
     with (
         patch(f"{PKG}.coordinator.async_pv_forecast", return_value={}),
@@ -196,3 +215,44 @@ async def test_unload_releases_control(hass: HomeAssistant, setup_entry, aioclie
     assert await hass.config_entries.async_unload(setup_entry.entry_id)
     assert any(c[0] == "DELETE" for c in aioclient_mock.mock_calls)
 
+
+
+@pytest.mark.parametrize(
+    ("rate_hours", "start_time"),
+    # 05:00 UTC = 21:00 in the test time zone (US/Pacific, PST)
+    [(48, datetime(2026, 11, 20, 5, 30, tzinfo=dt_util.UTC))],
+)
+async def test_evening_plan_snapshot_and_diagnostics(
+    hass: HomeAssistant, setup_entry, freezer
+) -> None:
+    from custom_components.pv_battery_optimizer.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    coordinator = setup_entry.runtime_data
+    assert dt_util.now().hour == 21
+    plans = coordinator.stored["plans"]
+    assert list(plans) == ["2026-11-20"]  # tomorrow in local time
+    assert plans["2026-11-20"]["rows"][0]["mode"] in ("hold", "charge", "normal")
+
+    # log SoC during the next hours, then evaluate
+    for minutes in range(0, 3 * 60, 15):
+        freezer.move_to(datetime(2026, 11, 20, 5, 45, tzinfo=dt_util.UTC) + timedelta(minutes=minutes))
+        await coordinator._async_control_tick()
+    freezer.move_to(datetime(2026, 11, 20, 9, 0, tzinfo=dt_util.UTC))
+
+    diag = await async_get_config_entry_diagnostics(hass, setup_entry)
+    assert "password" not in diag["entry"]["data"]
+    assert diag["current_plan"]["rows"]
+    day = diag["plan_vs_reality"]["2026-11-20"]
+    summary = day["summary"]
+    assert summary["hours_evaluated"] >= 2
+    assert summary["pv_actual"] > 0
+    assert "soc_error_mean" in summary
+    assert day["hours"][0]["partial"] is True
+
+
+async def test_no_snapshot_before_evening(hass: HomeAssistant, setup_entry) -> None:
+    coordinator = setup_entry.runtime_data
+    if dt_util.now().hour < 21:
+        assert coordinator.stored["plans"] == {}

@@ -94,6 +94,41 @@ Paste this into **Developer Tools → Template** to print the whole plan as a re
 
 PV, load and EV are kWh per 15-minute slot. `soc` is the battery level expected at the end of the slot.
 
+### Dashboard chart
+
+[`dashboard/battery-plan-card.yaml`](dashboard/battery-plan-card.yaml) is a chart of the current plan for the next 48 h:
+
+- **PV forecast:** yellow area.
+- **House load:** blue line, without the EV.
+- **EV charging:** purple columns.
+- **Grid charging:** red columns.
+- **Planned battery level:** green line, right axis.
+- **Price:** grey step line.
+
+It needs the custom card [ApexCharts Card](https://github.com/RomRider/apexcharts-card), available through HACS. Add it via *Edit dashboard → Add card → Manual* and paste the file's content.
+
+### Plan vs. reality (diagnostics)
+
+The integration keeps two records for later comparison:
+
+- **Evening plan:** the first plan after 21:00 that covers the whole next day, which includes tonight's charging decisions. One per day, kept for 30 days.
+- **Battery level:** the measured battery level at the start of every 15-minute slot, kept for 31 days.
+
+To compare, go to *Settings → Devices & services → PV Battery Optimizer → ⋮ → Download diagnostics*. The JSON file contains:
+
+- `plan_vs_reality`: for each saved evening plan, keyed by the day it was made for:
+  - `hours`: for each hour, the planned and actual values of `pv`, `house` (load without EV), `ev`, and the battery level at the end of the hour (`soc_end_plan` / `soc_end_actual`). Actual energies come from the recorder statistics of the configured sensors. The battery level comes from the integration's own log.
+  - `summary`: totals over all complete hours that are over, plus the mean and largest deviation of the battery level. A positive deviation means the battery was fuller than planned.
+  - Hours the plan covers only partly (e.g. the first hour of a plan made at 21:07) are listed with `partial: true` and left out of the summary.
+- `current_plan`: the current plan, slot by slot.
+- `pv_correction`: the learned PV correction factors and how many samples they're based on.
+- Configuration and options (password removed), live evcc values, and the desired and applied battery mode.
+
+What to look for:
+
+- **Battery level consistently below plan before or during expensive hours:** it charged too little. Check whether load was higher or PV lower than forecast.
+- **Battery level above plan and full around midday:** it charged too much, typically because PV was underestimated.
+
 ### Dry run checklist
 
 **1. Is it running?**
@@ -134,7 +169,7 @@ This is the most important check. Look at:
 - **Load:** actual consumption compared with the load forecast.
 - **PV:** actual production compared with the forecast.
 
-The `slots` and `schedule` attributes are excluded from the recorder because they're large, so a past plan can't be looked up in the history. Only the sensor states are kept: planned mode, charge target, planned grid charge. To compare plan and reality, copy the template output in the evening (e.g. around 22:00, after the next day's prices are in).
+Use the diagnostics download for this (see *Plan vs. reality*). The `slots` and `schedule` attributes are excluded from the recorder because they're large, so past plans are only available through the saved evening plans in the diagnostics.
 
 ### Turning on Active control
 
@@ -165,8 +200,8 @@ uv pip install -p .venv -r requirements_test.txt
 .venv/bin/pytest
 ```
 
-- `tests/test_optimizer.py`, `tests/test_forecast.py`: optimizer and forecasting (pure Python, also run with `python3 -m unittest discover -s tests -p 'test_[of]*.py'`).
-- `tests/test_integration.py`: config/options flow, setup, sensors and the control loop against a real HA core with mocked evcc API, PV forecast and recorder statistics.
+- `tests/test_optimizer.py`, `tests/test_forecast.py`, `tests/test_evaluation.py`: optimizer, forecasting and plan evaluation (pure Python, also run with `python3 -m unittest discover -s tests -p 'test_[ofe]*.py'`).
+- `tests/test_integration.py`: config/options flow, setup, sensors, control loop, evening plan snapshot and diagnostics against a real HA core with mocked evcc API, PV forecast and recorder statistics.
 
 ### HA version used for testing
 

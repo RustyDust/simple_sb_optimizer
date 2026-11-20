@@ -20,7 +20,7 @@ from homeassistant.util import dt as dt_util
 from . import OptimizerConfigEntry
 from .coordinator import OptimizerCoordinator
 from .entity import OptimizerEntity
-from .optimizer import Mode
+from .optimizer import Mode, plan_rows
 
 
 def _charge_target(c: OptimizerCoordinator) -> float | None:
@@ -54,19 +54,7 @@ def _mode_attrs(c: OptimizerCoordinator) -> dict[str, Any]:
                     "soc_end": round(step.soc_end / cap * 100, 1),
                 }
             )
-    slots = [
-        {
-            "start": s.slot.start.isoformat(),
-            "mode": s.mode.value,
-            "price": round(s.slot.import_price, 4),
-            "pv": round(s.slot.pv_kwh, 3),
-            "load": round(s.slot.load_kwh, 3),
-            "ev": round(s.slot.ev_kwh, 3),
-            "soc": round(s.soc_end / cap * 100, 1),
-            "grid": round(s.result.grid_import - s.result.grid_export, 3),
-        }
-        for s in plan.steps
-    ]
+    slots = plan_rows(plan, cap)
     return {
         "control_active": c.control_enabled,
         "applied_mode": c.applied_mode.value if c.applied_mode else None,

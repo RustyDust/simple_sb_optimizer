@@ -63,3 +63,6 @@ HISTORY_REFRESH = timedelta(hours=1)
 MAX_PLAN_AGE = timedelta(minutes=30)
 PV_SNAPSHOT_HOUR = 18  # local hour after which tomorrow's forecast is recorded
 PV_SAMPLE_RETENTION_DAYS = 400
+PLAN_SNAPSHOT_HOUR = 21  # local hour after which the plan for tomorrow is saved
+PLAN_RETENTION_DAYS = 30
+SOC_LOG_RETENTION_DAYS = 31
