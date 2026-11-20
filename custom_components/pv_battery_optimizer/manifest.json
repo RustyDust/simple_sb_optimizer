@@ -2,6 +2,7 @@
   "domain": "pv_battery_optimizer",
   "name": "PV Battery Optimizer",
   "after_dependencies": ["forecast_solar", "solcast_solar", "open_meteo_solar_forecast"],
+  "categories": ["energy.solar_batteries"],
   "codeowners": ["@RustyDust"],
   "config_flow": true,
   "dependencies": ["recorder"],
