@@ -124,10 +124,22 @@ def start_time() -> datetime | None:
 
 
 @pytest.fixture
-async def setup_entry(hass: HomeAssistant, aioclient_mock, freezer, rate_hours, start_time):
+def stored_data() -> dict | None:
+    """Pre-existing persisted integration data (override via parametrize)."""
+    return None
+
+
+@pytest.fixture
+async def setup_entry(
+    hass: HomeAssistant, aioclient_mock, freezer, hass_storage, rate_hours, start_time, stored_data
+):
     """Set up the integration with mocked evcc, PV forecast and history."""
     if start_time is not None:
         freezer.move_to(start_time)
+    if stored_data is not None:
+        hass_storage[f"{DOMAIN}.test_entry"] = {
+            "version": 1, "minor_version": 1, "key": f"{DOMAIN}.test_entry", "data": stored_data
+        }
     mock_evcc(aioclient_mock, hours=rate_hours)
     aioclient_mock.post(f"{URL}/api/batterymode/normal", json=1)
     aioclient_mock.post(f"{URL}/api/batterymode/hold", json=2)
@@ -136,6 +148,8 @@ async def setup_entry(hass: HomeAssistant, aioclient_mock, freezer, rate_hours, 
 
     entry = MockConfigEntry(
         domain=DOMAIN,
+        entry_id="test_entry",
+        unique_id=URL,
         data={
             CONF_EVCC_URL: URL,
             CONF_PV_FORECAST_ENTRY: "fs",
@@ -256,3 +270,101 @@ async def test_no_snapshot_before_evening(hass: HomeAssistant, setup_entry) -> N
     coordinator = setup_entry.runtime_data
     if dt_util.now().hour < 21:
         assert coordinator.stored["plans"] == {}
+
+
+def _reconfigure_entry(hass: HomeAssistant) -> tuple[MockConfigEntry, MockConfigEntry]:
+    fs = MockConfigEntry(domain="forecast_solar", title="Roof")
+    fs.add_to_hass(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=URL,
+        data={
+            CONF_EVCC_URL: URL,
+            "password": "secret",
+            CONF_PV_FORECAST_ENTRY: fs.entry_id,
+            CONF_PV_ENERGY_ENTITY: "sensor.pv_energy",
+            CONF_HOUSE_ENERGY_ENTITY: "sensor.wrong_house",
+            CONF_EV_ENERGY_ENTITY: "sensor.ev_energy",
+        },
+        options={**DEFAULT_OPTIONS, "grid_charge_kw": 4.6},
+    )
+    entry.add_to_hass(hass)
+    return entry, fs
+
+
+async def test_reconfigure_changes_sources_keeps_password_and_options(
+    hass: HomeAssistant, aioclient_mock
+) -> None:
+    entry, fs = _reconfigure_entry(hass)
+    aioclient_mock.post(f"{URL}/api/auth/login", json=True, cookies={"auth": "token"})
+    aioclient_mock.get(f"{URL}/api/state", json=evcc_state())
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    with patch(f"{PKG}.async_setup_entry", return_value=True) as setup:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_EVCC_URL: URL,
+                CONF_PV_FORECAST_ENTRY: fs.entry_id,
+                CONF_PV_ENERGY_ENTITY: "sensor.pv_energy",
+                CONF_HOUSE_ENERGY_ENTITY: "sensor.house_energy",
+                # EV sensor cleared
+            },
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_HOUSE_ENERGY_ENTITY] == "sensor.house_energy"
+    assert CONF_EV_ENERGY_ENTITY not in entry.data
+    assert entry.data["password"] == "secret"
+    assert entry.options["grid_charge_kw"] == 4.6
+    assert setup.called  # reloaded
+
+
+async def test_reconfigure_cannot_connect(hass: HomeAssistant, aioclient_mock) -> None:
+    entry, fs = _reconfigure_entry(hass)
+    aioclient_mock.post(f"{URL}/api/auth/login", status=500)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_EVCC_URL: URL,
+            CONF_PV_FORECAST_ENTRY: fs.entry_id,
+            CONF_PV_ENERGY_ENTITY: "sensor.pv_energy",
+            CONF_HOUSE_ENERGY_ENTITY: "sensor.house_energy",
+        },
+    )
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert entry.data[CONF_HOUSE_ENERGY_ENTITY] == "sensor.wrong_house"
+
+
+SAMPLE = ["2026-11-19T11:00:00+00:00", 1.0, 0.8]
+
+
+@pytest.mark.parametrize(
+    "stored_data",
+    [{"samples": [SAMPLE], "pv_learning_basis": ["fs", "sensor.old_pv"]}],
+)
+async def test_pv_learning_reset_when_pv_sensor_changed(hass: HomeAssistant, setup_entry) -> None:
+    stored = setup_entry.runtime_data.stored
+    assert stored["samples"] == []
+    assert stored["pv_learning_basis"] == ["fs", "sensor.pv_energy"]
+
+
+@pytest.mark.parametrize(
+    "stored_data",
+    [{"samples": [SAMPLE], "pv_learning_basis": ["fs", "sensor.pv_energy"]}],
+)
+async def test_pv_learning_kept_when_basis_unchanged(hass: HomeAssistant, setup_entry) -> None:
+    assert setup_entry.runtime_data.stored["samples"] == [SAMPLE]
+
+
+@pytest.mark.parametrize("stored_data", [{"samples": [SAMPLE]}])
+async def test_pv_learning_kept_for_existing_installs(hass: HomeAssistant, setup_entry) -> None:
+    """Data saved before the basis was tracked is kept and gets a basis."""
+    stored = setup_entry.runtime_data.stored
+    assert stored["samples"] == [SAMPLE]
+    assert stored["pv_learning_basis"] == ["fs", "sensor.pv_energy"]

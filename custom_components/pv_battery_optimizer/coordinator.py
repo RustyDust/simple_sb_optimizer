@@ -130,6 +130,20 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         for key, default in (("snapshots", {}), ("samples", []), ("plans", {}), ("soc_log", {})):
             self._stored.setdefault(key, default)
 
+        # The PV correction compares a specific forecast with a specific
+        # production sensor. If either changed (reconfigure), start learning
+        # from scratch instead of mixing old and new.
+        data = self.config_entry.data
+        basis = [data[CONF_PV_FORECAST_ENTRY], data[CONF_PV_ENERGY_ENTITY]]
+        previous = self._stored.get("pv_learning_basis")
+        if previous is not None and previous != basis:
+            LOGGER.info("PV forecast or PV sensor changed, resetting learned PV correction")
+            self._stored["snapshots"] = {}
+            self._stored["samples"] = []
+        if previous != basis:
+            self._stored["pv_learning_basis"] = basis
+            await self._store.async_save(self._stored)
+
     @callback
     def async_start_control_loop(self) -> None:
         self.config_entry.async_on_unload(

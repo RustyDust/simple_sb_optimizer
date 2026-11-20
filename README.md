@@ -74,6 +74,15 @@ The EV sensor's history should cover at least the load history window (option *D
 | Days of history for load forecast | 42 | |
 | Planning resolution | 0.05 kWh | SoC step of the optimizer. Smaller = more precise charge amounts, more CPU (0.05: ~1.5 s per 48 h plan on a fast machine, several seconds on a Raspberry Pi; 0.02: ~5× that). |
 
+### Changing the configuration later
+
+- **Battery and optimization parameters:** *Settings → Devices & services → PV Battery Optimizer → Configure*.
+- **evcc connection, PV forecast and sensors:** *⋮ → Reconfigure*. Options, saved plans and the battery level log are kept.
+  - **Password:** leave the field empty to keep the stored one.
+  - **EV sensor:** clear the field to stop subtracting EV energy.
+  - **Load forecast:** changing the house consumption or EV sensor takes effect immediately, because the history is read from the recorder again.
+  - **PV correction:** changing the PV forecast or the PV production sensor resets the learned correction, which then starts again from 1.0. Samples from the old pairing would distort it.
+
 ## Dry run and going live
 
 With **Active control** off, the plan is calculated and published but evcc keeps full control of the battery. Watch `sensor.pv_battery_optimizer_planned_battery_mode`:

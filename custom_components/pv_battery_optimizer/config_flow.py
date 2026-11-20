@@ -91,6 +91,26 @@ OPTIONS_SCHEMA = vol.Schema(
 )
 
 
+def _sources_fields(forecast_entries: list[ConfigEntry]) -> dict[Any, Any]:
+    return {
+        vol.Required(CONF_PV_FORECAST_ENTRY): SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=e.entry_id, label=f"{e.title} ({e.domain})")
+                    for e in forecast_entries
+                ]
+            )
+        ),
+        vol.Required(CONF_PV_ENERGY_ENTITY): ENERGY_SENSOR,
+        vol.Required(CONF_HOUSE_ENERGY_ENTITY): ENERGY_SENSOR,
+        vol.Optional(CONF_EV_ENERGY_ENTITY): ENERGY_SENSOR,
+    }
+
+
+URL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+
+
 class PvBatteryOptimizerConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
@@ -98,47 +118,50 @@ class PvBatteryOptimizerConfigFlow(ConfigFlow, domain=DOMAIN):
         self._data: dict[str, Any] = {}
         self._capacity: float | None = None
 
+    async def _async_validate_evcc(
+        self, url: str, password: str | None
+    ) -> tuple[dict[str, str], float | None]:
+        """Check the evcc connection. Returns (errors, battery capacity)."""
+        client = EvccClient(async_get_clientsession(self.hass), url, password)
+        try:
+            if password:
+                await client.login()
+            live = parse_state(await client.get_state())
+        except EvccAuthError:
+            return {"base": "invalid_auth"}, None
+        except EvccError:
+            return {"base": "cannot_connect"}, None
+        if live.soc_percent is None:
+            return {"base": "no_battery"}, None
+        return {}, live.capacity_kwh
+
+    def _forecast_entries(self) -> list[ConfigEntry]:
+        return [
+            e for e in self.hass.config_entries.async_entries() if e.domain in PV_FORECAST_DOMAINS
+        ]
+
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             url = user_input[CONF_EVCC_URL].rstrip("/")
             await self.async_set_unique_id(url)
             self._abort_if_unique_id_configured()
-            client = EvccClient(
-                async_get_clientsession(self.hass), url, user_input.get(CONF_PASSWORD)
-            )
-            try:
-                if user_input.get(CONF_PASSWORD):
-                    await client.login()
-                live = parse_state(await client.get_state())
-            except EvccAuthError:
-                errors["base"] = "invalid_auth"
-            except EvccError:
-                errors["base"] = "cannot_connect"
-            else:
-                if live.soc_percent is None:
-                    errors["base"] = "no_battery"
-                else:
-                    self._data = {**user_input, CONF_EVCC_URL: url}
-                    self._capacity = live.capacity_kwh
-                    return await self.async_step_sources()
+            errors, capacity = await self._async_validate_evcc(url, user_input.get(CONF_PASSWORD))
+            if not errors:
+                self._data = {**user_input, CONF_EVCC_URL: url}
+                self._capacity = capacity
+                return await self.async_step_sources()
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_EVCC_URL, default="http://evcc.local:7070"): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.URL)
-                ),
-                vol.Optional(CONF_PASSWORD): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                ),
+                vol.Required(CONF_EVCC_URL, default="http://evcc.local:7070"): URL_SELECTOR,
+                vol.Optional(CONF_PASSWORD): PASSWORD_SELECTOR,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_sources(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        forecast_entries = [
-            e for e in self.hass.config_entries.async_entries() if e.domain in PV_FORECAST_DOMAINS
-        ]
+        forecast_entries = self._forecast_entries()
         if not forecast_entries:
             return self.async_abort(reason="no_pv_forecast")
 
@@ -152,22 +175,50 @@ class PvBatteryOptimizerConfigFlow(ConfigFlow, domain=DOMAIN):
                 options=options,
             )
 
+        return self.async_show_form(
+            step_id="sources", data_schema=vol.Schema(_sources_fields(forecast_entries))
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change evcc connection and sources of an existing entry.
+
+        Options, learned PV correction and saved plans are kept. An empty
+        password field keeps the stored password."""
+        entry = self._get_reconfigure_entry()
+        forecast_entries = self._forecast_entries()
+        if not forecast_entries:
+            return self.async_abort(reason="no_pv_forecast")
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            url = user_input[CONF_EVCC_URL].rstrip("/")
+            password = user_input.get(CONF_PASSWORD) or entry.data.get(CONF_PASSWORD)
+            if url != entry.unique_id:
+                await self.async_set_unique_id(url)
+                self._abort_if_unique_id_configured()
+            errors, _ = await self._async_validate_evcc(url, password)
+            if not errors:
+                data = {k: v for k, v in user_input.items() if k != CONF_PASSWORD}
+                data[CONF_EVCC_URL] = url
+                if password:
+                    data[CONF_PASSWORD] = password
+                return self.async_update_reload_and_abort(entry, unique_id=url, data=data)
+
         schema = vol.Schema(
             {
-                vol.Required(CONF_PV_FORECAST_ENTRY): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=e.entry_id, label=f"{e.title} ({e.domain})")
-                            for e in forecast_entries
-                        ]
-                    )
-                ),
-                vol.Required(CONF_PV_ENERGY_ENTITY): ENERGY_SENSOR,
-                vol.Required(CONF_HOUSE_ENERGY_ENTITY): ENERGY_SENSOR,
-                vol.Optional(CONF_EV_ENERGY_ENTITY): ENERGY_SENSOR,
+                vol.Required(CONF_EVCC_URL): URL_SELECTOR,
+                vol.Optional(CONF_PASSWORD): PASSWORD_SELECTOR,
+                **_sources_fields(forecast_entries),
             }
         )
-        return self.async_show_form(step_id="sources", data_schema=schema)
+        suggested = {k: v for k, v in (user_input or entry.data).items() if k != CONF_PASSWORD}
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
+        )
 
     @staticmethod
     @callback

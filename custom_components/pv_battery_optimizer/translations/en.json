@@ -25,6 +25,25 @@
           "house_energy_entity": "Total household consumption (kWh, with long-term statistics).",
           "ev_energy_entity": "Optional: subtracted from the house consumption, EV charging is taken from evcc instead."
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure PV Battery Optimizer",
+        "description": "Change the evcc connection and the forecast and history sources. Options, saved plans and the learned PV correction are kept. The PV correction restarts if the PV forecast or the PV production sensor changes.",
+        "data": {
+          "evcc_url": "evcc URL",
+          "password": "evcc admin password",
+          "pv_forecast_entry": "PV forecast",
+          "pv_energy_entity": "PV production energy sensor",
+          "house_energy_entity": "House consumption energy sensor",
+          "ev_energy_entity": "EV charging energy sensor"
+        },
+        "data_description": {
+          "evcc_url": "Base URL of your evcc instance, e.g. http://192.168.1.10:7070",
+          "password": "Leave empty to keep the stored password.",
+          "pv_energy_entity": "Used to learn the error of the PV forecast.",
+          "house_energy_entity": "Total household consumption (kWh, with long-term statistics).",
+          "ev_energy_entity": "Optional: subtracted from the house consumption, EV charging is taken from evcc instead."
+        }
       }
     },
     "error": {
@@ -34,7 +53,8 @@
     },
     "abort": {
       "already_configured": "This evcc instance is already configured.",
-      "no_pv_forecast": "No supported PV forecast integration (Forecast.Solar, Solcast, Open-Meteo Solar Forecast) is set up."
+      "no_pv_forecast": "No supported PV forecast integration (Forecast.Solar, Solcast, Open-Meteo Solar Forecast) is set up.",
+      "reconfigure_successful": "Reconfiguration was successful."
     }
   },
   "options": {
