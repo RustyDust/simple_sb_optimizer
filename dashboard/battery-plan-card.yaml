@@ -1,6 +1,8 @@
 # Battery plan chart for the PV Battery Optimizer.
 # Requires the custom card "apexcharts-card" (HACS: "ApexCharts Card").
 # Add to a dashboard via: Edit dashboard -> Add card -> Manual -> paste this.
+# If your plan sensor has a different entity ID, replace
+# sensor.pv_battery_optimizer_planned_battery_mode in all series.
 type: custom:apexcharts-card
 header:
   show: true

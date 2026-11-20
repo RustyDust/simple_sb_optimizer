@@ -84,15 +84,28 @@ Other sensors: charge target, planned grid charge (kWh), estimated savings compa
 
 ### Viewing the plan
 
-Paste this into **Developer Tools → Template** to print the whole plan as a readable table:
+Paste this into **Developer Tools → Template** to print the whole plan as a readable table. It finds the plan sensor by itself, so it works regardless of the sensor's entity ID:
 
 ```jinja
-{% for s in state_attr('sensor.pv_battery_optimizer_planned_battery_mode', 'slots') -%}
+{% set ns = namespace(entity=none) %}
+{% for e in integration_entities('pv_battery_optimizer') if state_attr(e, 'slots') is not none %}{% set ns.entity = e %}{% endfor %}
+{% if ns.entity is none -%}
+No plan found. Entities of the integration:
+{% for e in integration_entities('pv_battery_optimizer') %}  {{ e }}: {{ states(e) }}
+{% endfor %}
+{%- else -%}
+Plan from {{ ns.entity }}:
+{% for s in state_attr(ns.entity, 'slots') -%}
 {{ as_local(as_datetime(s.start)).strftime('%a %H:%M') }}  {{ s.mode.ljust(6) }}  price {{ '%.3f' % s.price }}  pv {{ '%.2f' % s.pv }}  load {{ '%.2f' % s.load }}  ev {{ '%.2f' % s.ev }}  soc {{ s.soc }}%
 {% endfor %}
+{%- endif %}
 ```
 
 PV, load and EV are kWh per 15-minute slot. `soc` is the battery level expected at the end of the slot.
+
+If it prints "No plan found", the list below it shows the integration's entities and their states. A plan sensor that is `unavailable` means planning failed; check the log for `pv_battery_optimizer`.
+
+The first line of the output shows the plan sensor's entity ID. If it differs from `sensor.pv_battery_optimizer_planned_battery_mode`, use that ID in the dashboard chart as well.
 
 ### Dashboard chart
 
