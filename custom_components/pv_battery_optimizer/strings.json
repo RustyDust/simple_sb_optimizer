@@ -77,14 +77,18 @@
           "pv_safety_factor": "PV forecast safety factor",
           "load_history_days": "Days of history for load forecast",
           "soc_step_kwh": "Planning resolution",
-          "min_benefit": "Minimum benefit for hold/charge"
+          "min_benefit": "Minimum benefit for hold/charge",
+          "open_meteo": "Use Open-Meteo PV model",
+          "pv_source": "PV forecast used for planning"
         },
         "data_description": {
           "grid_charge_kw": "Power the battery actually charges with in evcc's charge mode. evcc's sonnen template uses maxchargepower (default 3300 W) for this.",
           "feedin_price": "Used when evcc has no feed-in tariff configured.",
           "pv_safety_factor": "Applied on top of the learned correction. Below 1 = plan more conservatively.",
           "soc_step_kwh": "SoC step of the optimizer. Smaller = more precise charge amounts but more CPU (0.05 kWh: ~1.5 s per 48 h plan on a fast machine, several seconds on a Raspberry Pi).",
-          "min_benefit": "Hold or grid charging is only planned if it saves at least this much per 15 minutes compared with normal operation. Avoids switching modes for negligible gains."
+          "min_benefit": "Hold or grid charging is only planned if it saves at least this much per 15 minutes compared with normal operation. Avoids switching modes for negligible gains.",
+          "open_meteo": "Trains a model of your PV system on Open-Meteo weather forecasts (back to two years) and your production history. Sends your home location, rounded to about 1 km, to open-meteo.com. Free for non-commercial use.",
+          "pv_source": "Which PV forecast the optimizer uses. The Open-Meteo options need the model enabled; if it is unavailable the forecast integration is used. Diagnostics compare the day-ahead accuracy of both."
         }
       }
     }
@@ -94,6 +98,13 @@
       "options": {
         "optimize": "Let the optimizer decide",
         "block": "Never discharge into the EV"
+      }
+    },
+    "pv_source": {
+      "options": {
+        "forecast": "Forecast integration (with learned correction)",
+        "open_meteo": "Open-Meteo PV model",
+        "average": "Average of both"
       }
     }
   },
@@ -117,7 +128,7 @@
         "name": "Estimated savings"
       },
       "pv_forecast_24h": {
-        "name": "PV forecast next 24h (corrected)"
+        "name": "PV forecast next 24h"
       },
       "load_forecast_24h": {
         "name": "Load forecast next 24h"

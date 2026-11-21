@@ -9,7 +9,9 @@ from homeassistant.core import HomeAssistant
 
 from . import OptimizerConfigEntry
 from .const import CONF_PASSWORD
+from .coordinator import DAY_AHEAD
 from .optimizer import plan_rows
+from .pvmodel import compare_day_ahead
 
 TO_REDACT = {CONF_PASSWORD}
 
@@ -55,6 +57,17 @@ async def async_get_config_entry_diagnostics(
             "factors": data.pv_factors if data else None,
             "samples": len(stored["samples"]),
             "pending_forecast_snapshots": sorted(stored["snapshots"]),
+        },
+        "pv_forecast": {
+            "source_used": data.pv_source if data else None,
+            "errors": coordinator.pv_errors,
+            "open_meteo_model": coordinator.weather_pv.diagnostics()
+            if coordinator.weather_pv
+            else None,
+            # day-ahead forecast (made at 18:00) vs. actual production
+            "day_ahead_comparison": compare_day_ahead(
+                {name: stored[sample_key] for name, (_, sample_key) in DAY_AHEAD.items()}
+            ),
         },
         "current_plan": current,
         "plan_vs_reality": await coordinator.async_evaluate_plans(),

@@ -10,7 +10,6 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
-    SensorStateClass,
 )
 from homeassistant.const import PERCENTAGE, UnitOfEnergy
 from homeassistant.core import HomeAssistant
@@ -21,6 +20,10 @@ from . import OptimizerConfigEntry
 from .coordinator import OptimizerCoordinator
 from .entity import OptimizerEntity
 from .optimizer import Mode, plan_rows
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
 
 
 def _charge_target(c: OptimizerCoordinator) -> float | None:
@@ -104,7 +107,12 @@ SENSORS: tuple[OptimizerSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=1,
         value_fn=lambda c: round(c.data.pv_next_24h_kwh, 2),
-        attrs_fn=lambda c: {"correction_factors": c.data.pv_factors},
+        attrs_fn=lambda c: {
+            "source": c.data.pv_source,
+            "forecast_integration_kwh": _round(c.data.pv_forecast_24h_kwh),
+            "open_meteo_model_kwh": _round(c.data.pv_open_meteo_24h_kwh),
+            "correction_factors": c.data.pv_factors,
+        },
     ),
     OptimizerSensorDescription(
         key="load_forecast_24h",

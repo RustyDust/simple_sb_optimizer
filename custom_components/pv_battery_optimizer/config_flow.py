@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -40,13 +41,18 @@ from .const import (
     CONF_MAX_SOC,
     CONF_MIN_BENEFIT,
     CONF_MIN_SOC,
+    CONF_OPEN_METEO,
     CONF_PASSWORD,
     CONF_PV_ENERGY_ENTITY,
     CONF_PV_FORECAST_ENTRY,
     CONF_PV_SAFETY,
+    CONF_PV_SOURCE,
     CONF_SOC_STEP,
     CONF_WEAR_COST,
     DEFAULT_OPTIONS,
+    PV_SOURCE_AVERAGE,
+    PV_SOURCE_FORECAST,
+    PV_SOURCE_OPEN_METEO,
     DOMAIN,
     EV_POLICY_BLOCK,
     EV_POLICY_OPTIMIZE,
@@ -87,6 +93,13 @@ OPTIONS_SCHEMA = vol.Schema(
         vol.Required(CONF_PV_SAFETY): _num(0.5, 1.2, 0.01),
         vol.Required(CONF_LOAD_HISTORY_DAYS): _num(7, 365, 1, "d"),
         vol.Required(CONF_SOC_STEP): _num(0.02, 0.5, 0.01, "kWh"),
+        vol.Required(CONF_OPEN_METEO): BooleanSelector(),
+        vol.Required(CONF_PV_SOURCE): SelectSelector(
+            SelectSelectorConfig(
+                options=[PV_SOURCE_FORECAST, PV_SOURCE_OPEN_METEO, PV_SOURCE_AVERAGE],
+                translation_key=CONF_PV_SOURCE,
+            )
+        ),
     }
 )
 

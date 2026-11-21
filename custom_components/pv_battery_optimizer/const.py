@@ -33,9 +33,16 @@ CONF_PV_SAFETY = "pv_safety_factor"
 CONF_LOAD_HISTORY_DAYS = "load_history_days"
 CONF_SOC_STEP = "soc_step_kwh"
 CONF_MIN_BENEFIT = "min_benefit"
+CONF_OPEN_METEO = "open_meteo"
+CONF_PV_SOURCE = "pv_source"
 
 EV_POLICY_OPTIMIZE = "optimize"
 EV_POLICY_BLOCK = "block"
+
+# PV forecast used for planning
+PV_SOURCE_FORECAST = "forecast"  # forecast integration with learned correction
+PV_SOURCE_OPEN_METEO = "open_meteo"  # own model on Open-Meteo irradiance
+PV_SOURCE_AVERAGE = "average"
 
 DEFAULT_OPTIONS = {
     CONF_CAPACITY: 20.0,
@@ -54,6 +61,8 @@ DEFAULT_OPTIONS = {
     CONF_LOAD_HISTORY_DAYS: 42,
     CONF_SOC_STEP: 0.05,
     CONF_MIN_BENEFIT: 0.01,
+    CONF_OPEN_METEO: False,
+    CONF_PV_SOURCE: PV_SOURCE_FORECAST,
 }
 
 # Integrations providing an "energy" platform with async_get_solar_forecast

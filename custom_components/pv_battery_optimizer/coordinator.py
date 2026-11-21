@@ -31,10 +31,12 @@ from .const import (
     CONF_MAX_SOC,
     CONF_MIN_BENEFIT,
     CONF_MIN_SOC,
+    CONF_OPEN_METEO,
     CONF_PASSWORD,
     CONF_PV_ENERGY_ENTITY,
     CONF_PV_FORECAST_ENTRY,
     CONF_PV_SAFETY,
+    CONF_PV_SOURCE,
     CONF_SOC_STEP,
     CONF_WEAR_COST,
     CONTROL_INTERVAL,
@@ -56,16 +58,29 @@ from .evcc_api import EvccClient, EvccError, LiveState, Rate, parse_state
 from .forecast import (
     PvSample,
     apply_correction,
+    combine_pv,
     energy_in_interval,
     forecast_load,
     pv_correction_factors,
 )
 from .optimizer import BatteryParams, Mode, Plan, Slot, control_mode, optimize, plan_rows
+from .open_meteo import OpenMeteoError
 from .sources import async_hourly_energy, async_pv_forecast
+from .weather_pv import WeatherPvForecast
 
 MAX_HORIZON = timedelta(hours=48)
 EV_LIVE_LOOKAHEAD = timedelta(minutes=30)
 STORE_VERSION = 1
+
+# Day-ahead forecasts recorded every evening and compared with the actual
+# production: (snapshot key, sample key) per forecast. The uncorrected
+# forecast integration feeds the correction factors, all three feed the
+# comparison in the diagnostics.
+DAY_AHEAD = {
+    "forecast": ("snapshots", "samples"),
+    "forecast_corrected": ("fsc_snapshots", "fsc_samples"),
+    "open_meteo": ("om_snapshots", "om_samples"),
+}
 
 
 @dataclass
@@ -76,6 +91,9 @@ class OptimizerData:
     pv_factors: dict[int, float]
     pv_next_24h_kwh: float
     load_next_24h_kwh: float
+    pv_source: str
+    pv_forecast_24h_kwh: float | None
+    pv_open_meteo_24h_kwh: float | None
 
 
 def _overlap_hours(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> float:
@@ -122,13 +140,24 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         # snapshots and the measured SoC log (for plan vs. reality)
         self._stored: dict[str, Any] = {}
         self._last_soc_slot: datetime | None = None
+        self.weather_pv: WeatherPvForecast | None = None
+        if self.options[CONF_OPEN_METEO]:
+            self.weather_pv = WeatherPvForecast(
+                hass, entry.entry_id, entry.data[CONF_PV_ENERGY_ENTITY]
+            )
+        self.pv_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------------ setup
 
     async def async_setup(self) -> None:
         self._stored = await self._store.async_load() or {}
-        for key, default in (("snapshots", {}), ("samples", []), ("plans", {}), ("soc_log", {})):
-            self._stored.setdefault(key, default)
+        self._stored.setdefault("plans", {})
+        self._stored.setdefault("soc_log", {})
+        for snap_key, sample_key in DAY_AHEAD.values():
+            self._stored.setdefault(snap_key, {})
+            self._stored.setdefault(sample_key, [])
+        if self.weather_pv is not None:
+            await self.weather_pv.async_load()
 
         # The PV correction compares a specific forecast with a specific
         # production sensor. If either changed (reconfigure), start learning
@@ -138,8 +167,9 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         previous = self._stored.get("pv_learning_basis")
         if previous is not None and previous != basis:
             LOGGER.info("PV forecast or PV sensor changed, resetting learned PV correction")
-            self._stored["snapshots"] = {}
-            self._stored["samples"] = []
+            for snap_key, sample_key in DAY_AHEAD.values():
+                self._stored[snap_key] = {}
+                self._stored[sample_key] = []
         if previous != basis:
             self._stored["pv_learning_basis"] = basis
             await self._store.async_save(self._stored)
@@ -195,23 +225,25 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         soc_kwh = live.soc_percent / 100 * params.capacity_kwh
         tz = dt_util.get_default_time_zone()
 
-        try:
-            pv_raw = await async_pv_forecast(
-                self.hass, self.config_entry.data[CONF_PV_FORECAST_ENTRY]
-            )
-        except Exception as err:  # noqa: BLE001 - foreign integration
-            raise UpdateFailed(f"PV forecast unavailable: {err}") from err
+        pv_raw, pv_model = await self._async_pv_forecasts(now)
 
         await self._async_refresh_load_history(now)
-        await self._async_update_pv_learning(now, pv_raw)
 
         samples = [
             PvSample(dt_util.parse_datetime(ts), fc, act)
             for ts, fc, act in self._stored["samples"]
         ]
         factors = pv_correction_factors(samples, now, tz)
+        pv_corrected = apply_correction(pv_raw, factors, tz) if pv_raw is not None else None
+        await self._async_update_pv_learning(
+            now,
+            {"forecast": pv_raw, "forecast_corrected": pv_corrected, "open_meteo": pv_model},
+        )
+        pv_selected, pv_source = combine_pv(
+            pv_corrected, pv_model, self.options[CONF_PV_SOURCE]
+        )
         safety = float(self.options[CONF_PV_SAFETY])
-        pv = {k: v * safety for k, v in apply_correction(pv_raw, factors, tz).items()}
+        pv = {k: v * safety for k, v in pv_selected.items()}
 
         horizon_end = min(grid_rates[-1].end, now + MAX_HORIZON)
         first_hour = now.replace(minute=0, second=0, microsecond=0)
@@ -234,7 +266,39 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
             pv_factors=factors,
             pv_next_24h_kwh=energy_in_interval(pv, now, day_end),
             load_next_24h_kwh=energy_in_interval(load, now, day_end),
+            pv_source=pv_source,
+            pv_forecast_24h_kwh=None
+            if pv_corrected is None
+            else energy_in_interval(pv_corrected, now, day_end),
+            pv_open_meteo_24h_kwh=None
+            if pv_model is None
+            else energy_in_interval(pv_model, now, day_end),
         )
+
+    async def _async_pv_forecasts(
+        self, now: datetime
+    ) -> tuple[dict[datetime, float] | None, dict[datetime, float] | None]:
+        """Forecast integration (uncorrected) and Open-Meteo model forecast.
+        Either may be None; planning fails only if both are unavailable."""
+        self.pv_errors = {}
+        pv_raw: dict[datetime, float] | None = None
+        try:
+            pv_raw = await async_pv_forecast(
+                self.hass, self.config_entry.data[CONF_PV_FORECAST_ENTRY]
+            )
+        except Exception as err:  # noqa: BLE001 - foreign integration
+            self.pv_errors["forecast"] = str(err)
+        pv_model: dict[datetime, float] | None = None
+        if self.weather_pv is not None:
+            try:
+                pv_model = await self.weather_pv.async_forecast(now)
+            except OpenMeteoError as err:
+                self.pv_errors["open_meteo"] = str(err)
+        if pv_raw is None and pv_model is None:
+            raise UpdateFailed(f"PV forecast unavailable: {self.pv_errors}")
+        if self.pv_errors:
+            LOGGER.debug("PV forecast problems: %s", self.pv_errors)
+        return pv_raw, pv_model
 
     def _build_slots(
         self,
@@ -305,50 +369,60 @@ class OptimizerCoordinator(DataUpdateCoordinator[OptimizerData]):
         self._history_fetched = now
 
     async def _async_update_pv_learning(
-        self, now: datetime, pv_raw: dict[datetime, float]
+        self, now: datetime, forecasts: dict[str, dict[datetime, float] | None]
     ) -> None:
-        """Record the day-ahead PV forecast every evening and, once the day is
-        over, compare it with the actual production from the recorder."""
+        """Record the day-ahead PV forecasts every evening and, once the day is
+        over, compare them with the actual production from the recorder."""
         tz = dt_util.get_default_time_zone()
         local_now = now.astimezone(tz)
-        snapshots: dict[str, dict[str, float]] = self._stored["snapshots"]
-        samples: list[list[Any]] = self._stored["samples"]
-        changed = False
-
         tomorrow = local_now.date() + timedelta(days=1)
-        if local_now.hour >= PV_SNAPSHOT_HOUR and tomorrow.isoformat() not in snapshots:
-            snapshots[tomorrow.isoformat()] = {
-                ts.isoformat(): kwh
-                for ts, kwh in pv_raw.items()
-                if ts.astimezone(tz).date() == tomorrow
-            }
-            changed = True
+        changed = False
+        actual_by_day: dict[str, dict[datetime, float]] = {}
 
-        for day_str in list(snapshots):
-            day = date.fromisoformat(day_str)
-            day_start = datetime(day.year, day.month, day.day, tzinfo=tz)
-            day_end = day_start + timedelta(days=1)
-            # wait until hourly statistics of the whole day are compiled
-            if now < dt_util.as_utc(day_end) + timedelta(hours=1):
-                continue
-            snapshot = snapshots.pop(day_str)
-            changed = True
-            actual = await async_hourly_energy(
-                self.hass,
-                self.config_entry.data[CONF_PV_ENERGY_ENTITY],
-                dt_util.as_utc(day_start),
-                dt_util.as_utc(day_end),
-            )
-            for ts_str, fc in snapshot.items():
-                ts = dt_util.parse_datetime(ts_str)
-                if ts is not None and (act := actual.get(ts)) is not None:
-                    samples.append([ts_str, fc, act])
+        for name, (snap_key, sample_key) in DAY_AHEAD.items():
+            snapshots: dict[str, dict[str, float]] = self._stored[snap_key]
+            samples: list[list[Any]] = self._stored[sample_key]
+            forecast = forecasts.get(name)
 
-        cutoff = now - timedelta(days=PV_SAMPLE_RETENTION_DAYS)
-        kept = [s for s in samples if dt_util.parse_datetime(s[0]) >= cutoff]
-        if len(kept) != len(samples):
-            self._stored["samples"] = kept
-            changed = True
+            if (
+                forecast is not None
+                and local_now.hour >= PV_SNAPSHOT_HOUR
+                and tomorrow.isoformat() not in snapshots
+            ):
+                snapshots[tomorrow.isoformat()] = {
+                    ts.isoformat(): kwh
+                    for ts, kwh in forecast.items()
+                    if ts.astimezone(tz).date() == tomorrow
+                }
+                changed = True
+
+            for day_str in list(snapshots):
+                day = date.fromisoformat(day_str)
+                day_start = datetime(day.year, day.month, day.day, tzinfo=tz)
+                day_end = day_start + timedelta(days=1)
+                # wait until hourly statistics of the whole day are compiled
+                if now < dt_util.as_utc(day_end) + timedelta(hours=1):
+                    continue
+                snapshot = snapshots.pop(day_str)
+                changed = True
+                if day_str not in actual_by_day:
+                    actual_by_day[day_str] = await async_hourly_energy(
+                        self.hass,
+                        self.config_entry.data[CONF_PV_ENERGY_ENTITY],
+                        dt_util.as_utc(day_start),
+                        dt_util.as_utc(day_end),
+                    )
+                actual = actual_by_day[day_str]
+                for ts_str, fc in snapshot.items():
+                    ts = dt_util.parse_datetime(ts_str)
+                    if ts is not None and (act := actual.get(ts)) is not None:
+                        samples.append([ts_str, fc, act])
+
+            cutoff = now - timedelta(days=PV_SAMPLE_RETENTION_DAYS)
+            kept = [s for s in samples if dt_util.parse_datetime(s[0]) >= cutoff]
+            if len(kept) != len(samples):
+                self._stored[sample_key] = kept
+                changed = True
         if changed:
             await self._store.async_save(self._stored)
 

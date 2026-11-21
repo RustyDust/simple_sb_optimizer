@@ -145,3 +145,36 @@ def to_hourly(points: dict[datetime, float]) -> dict[datetime, float]:
     for ts, kwh in points.items():
         out[ts.replace(minute=0, second=0, microsecond=0)] += kwh
     return dict(out)
+
+
+def combine_pv(
+    forecast: dict[datetime, float] | None,
+    model: dict[datetime, float] | None,
+    mode: str,
+) -> tuple[dict[datetime, float], str]:
+    """Select / mix two hourly PV forecasts.
+
+    ``mode``: "forecast", "open_meteo" or "average". Hours missing in the
+    preferred source are filled from the other one. Returns the series and
+    the source actually used ("forecast", "open_meteo", "average" or
+    "forecast (fallback)" etc. when the preferred one is unavailable)."""
+    if not model:
+        if mode != "forecast":
+            return dict(forecast or {}), "forecast (fallback)"
+        return dict(forecast or {}), "forecast"
+    if not forecast:
+        if mode != "open_meteo":
+            return dict(model), "open_meteo (fallback)"
+        return dict(model), "open_meteo"
+    if mode == "forecast":
+        return dict(forecast), "forecast"
+    out: dict[datetime, float] = {}
+    for hour in forecast.keys() | model.keys():
+        fc, om = forecast.get(hour), model.get(hour)
+        if fc is None or om is None:
+            out[hour] = om if fc is None else fc
+        elif mode == "average":
+            out[hour] = (fc + om) / 2
+        else:
+            out[hour] = om
+    return out, mode

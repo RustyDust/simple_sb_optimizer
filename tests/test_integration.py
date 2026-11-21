@@ -130,8 +130,21 @@ def stored_data() -> dict | None:
 
 
 @pytest.fixture
+def options() -> dict:
+    """Integration options (override via parametrize)."""
+    return DEFAULT_OPTIONS
+
+
+@pytest.fixture
 async def setup_entry(
-    hass: HomeAssistant, aioclient_mock, freezer, hass_storage, rate_hours, start_time, stored_data
+    hass: HomeAssistant,
+    aioclient_mock,
+    freezer,
+    hass_storage,
+    rate_hours,
+    start_time,
+    stored_data,
+    options,
 ):
     """Set up the integration with mocked evcc, PV forecast and history."""
     if start_time is not None:
@@ -157,7 +170,7 @@ async def setup_entry(
             CONF_HOUSE_ENERGY_ENTITY: "sensor.house_energy",
             CONF_EV_ENERGY_ENTITY: "sensor.ev_energy",
         },
-        options=DEFAULT_OPTIONS,
+        options=options,
     )
     entry.add_to_hass(hass)
 
@@ -175,6 +188,7 @@ async def setup_entry(
     with (
         patch(f"{PKG}.coordinator.async_pv_forecast", return_value={}),
         patch(f"{PKG}.coordinator.async_hourly_energy", side_effect=fake_history),
+        patch(f"{PKG}.weather_pv.async_hourly_energy", side_effect=fake_history),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -368,3 +382,95 @@ async def test_pv_learning_kept_for_existing_installs(hass: HomeAssistant, setup
     stored = setup_entry.runtime_data.stored
     assert stored["samples"] == [SAMPLE]
     assert stored["pv_learning_basis"] == ["fs", "sensor.pv_energy"]
+
+
+def open_meteo_payload(lat: float, lon: float) -> dict:
+    """Hourly irradiance following the sun, from 2 years ago to 3 days ahead."""
+    from custom_components.pv_battery_optimizer.pvmodel import hour_sun_vector
+
+    now = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    times, ghi, dni, dhi = [], [], [], []
+    h = now - timedelta(days=732)
+    while h < now + timedelta(days=3):
+        up = max(0.0, hour_sun_vector(h, lat, lon)[2])
+        times.append(int((h + timedelta(hours=1)).timestamp()))  # stamped at period end
+        ghi.append(round(800 * up, 1))
+        dni.append(round(700 * up**0.5, 1) if up > 0 else 0.0)
+        dhi.append(round(100 * up, 1))
+        h += timedelta(hours=1)
+    return {
+        "hourly": {
+            "time": times,
+            "shortwave_radiation": ghi,
+            "direct_normal_irradiance": dni,
+            "diffuse_radiation": dhi,
+        }
+    }
+
+
+OPEN_METEO = {**DEFAULT_OPTIONS, "open_meteo": True, "pv_source": "open_meteo"}
+
+
+@pytest.fixture
+def open_meteo_ok(hass: HomeAssistant, aioclient_mock) -> None:
+    from custom_components.pv_battery_optimizer.open_meteo import FORECAST_URL, HISTORY_URL
+
+    payload = open_meteo_payload(round(hass.config.latitude, 2), round(hass.config.longitude, 2))
+    aioclient_mock.get(HISTORY_URL, json=payload)
+    aioclient_mock.get(FORECAST_URL, json=payload)
+
+
+@pytest.mark.parametrize("options", [OPEN_METEO])
+async def test_open_meteo_model_used_for_planning(
+    hass: HomeAssistant, open_meteo_ok, setup_entry, aioclient_mock
+) -> None:
+    from custom_components.pv_battery_optimizer.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    pv = hass.states.get("sensor.pv_battery_optimizer_pv_forecast_next_24h")
+    assert setup_entry.runtime_data.pv_errors == {}
+    assert pv.attributes["source"] == "open_meteo"
+    # fake production is 1 kWh in every hour, the model has learnt that
+    assert pv.attributes["open_meteo_model_kwh"] > 5
+    assert float(pv.state) == pytest.approx(pv.attributes["open_meteo_model_kwh"], abs=0.01)
+
+    # sends only the rounded location, no other data
+    urls = [str(c[1]) for c in aioclient_mock.mock_calls if "open-meteo" in str(c[1])]
+    assert len(urls) == 2
+
+    diag = await async_get_config_entry_diagnostics(hass, setup_entry)
+    model = diag["pv_forecast"]["open_meteo_model"]
+    assert model["training_hours"] > 1000
+    assert model["last_error"] is None
+    assert model["backtest_last_30_days"]["hours"] > 0
+    assert str(hass.config.latitude)[:5] not in str(diag)
+    assert set(diag["pv_forecast"]["day_ahead_comparison"]) == {
+        "forecast",
+        "forecast_corrected",
+        "open_meteo",
+    }
+
+
+@pytest.fixture
+def open_meteo_down(aioclient_mock) -> None:
+    from custom_components.pv_battery_optimizer.open_meteo import FORECAST_URL, HISTORY_URL
+
+    aioclient_mock.get(HISTORY_URL, status=502, json={"error": True, "reason": "down"})
+    aioclient_mock.get(FORECAST_URL, status=502, json={"error": True, "reason": "down"})
+
+
+@pytest.mark.parametrize("options", [OPEN_METEO])
+async def test_open_meteo_down_falls_back_to_forecast(
+    hass: HomeAssistant, open_meteo_down, setup_entry
+) -> None:
+    pv = hass.states.get("sensor.pv_battery_optimizer_pv_forecast_next_24h")
+    assert pv.attributes["source"] == "forecast (fallback)"
+    assert pv.attributes["open_meteo_model_kwh"] is None
+    assert "down" in setup_entry.runtime_data.pv_errors["open_meteo"]
+    # the plan is made anyway
+    assert hass.states.get("sensor.pv_battery_optimizer_planned_battery_mode").state in (
+        "normal",
+        "hold",
+        "charge",
+    )

@@ -12,7 +12,7 @@ battery mode.
 
 - **Planning (every 5 min, and immediately when an EV starts or stops charging)**
   - Prices: `GET /api/tariff/grid` and `/api/tariff/feedin` from evcc (15-min slots, up to 48 h).
-  - PV: hourly forecast from Forecast.Solar (or Solcast / Open-Meteo Solar Forecast), corrected by learned per-hour factors.
+  - PV: hourly forecast from Forecast.Solar (or Solcast / Open-Meteo Solar Forecast), corrected by learned per-hour factors. Optionally, or in addition, an own model of your PV system trained on Open-Meteo weather forecasts and your production history (see *Open-Meteo PV model*).
   - Load: exponentially weighted average of the same hour on the same day type (weekday/weekend) from long-term statistics. EV energy is subtracted.
   - EV: running sessions (from live charge power) and evcc charging plans.
   - Optimizer: dynamic program (SoC resolution configurable, default 0.05 kWh; charge slots may be used partially) over battery SoC choosing `normal` / `hold` / `charge` for each slot to minimise grid cost, including efficiency losses and battery wear. Energy left at the end of the horizon is valued only at the cheapest price, so it never charges "just in case".
@@ -79,7 +79,23 @@ The EV sensor's history should cover at least the load history window (option *D
 | Battery discharge while EV charges | Let the optimizer decide | The optimizer's battery mode overrides evcc's "prevent discharge during fast charging". *Let the optimizer decide*: the battery may feed the EV when that is cheaper overall. *Never discharge into the EV*: battery is held whenever an EV is charging. |
 | PV forecast safety factor | 1.0 | Applied on top of the learned correction. Below 1 = plan more conservatively (more grid charging). |
 | Days of history for load forecast | 42 | |
+| Use Open-Meteo PV model | off | See *Open-Meteo PV model* below. Sends your home location to open-meteo.com. |
+| PV forecast used for planning | Forecast integration | *Forecast integration*: Forecast.Solar etc. with the learned correction. *Open-Meteo PV model*: the own model. *Average of both*. The Open-Meteo choices need the model enabled; whenever it is unavailable, the forecast integration is used. |
 | Planning resolution | 0.05 kWh | SoC step of the optimizer. Smaller = more precise charge amounts, more CPU (0.05: ~1.5 s per 48 h plan on a fast machine, several seconds on a Raspberry Pi; 0.02: ~5× that). |
+
+### Open-Meteo PV model (optional)
+
+The learned correction of Forecast.Solar has two weaknesses: it can only start learning after installation (HA doesn't keep old forecasts), and it is one factor per hour of the day, so it can't tell a hazy day from a clear one. The Open-Meteo model addresses both:
+
+- **Training data:** Open-Meteo's *Historical Forecast API* has archived weather forecasts back to 2022. They are paired with your actual hourly production from the recorder statistics of the PV production sensor, up to two years back. The model is usable immediately after the first training.
+- **Model:** for a given position of the sun, the output of any PV system is roughly `a × direct irradiance + b × diffuse irradiance`. `a` and `b` are estimated for every forecast hour from past hours with a similar sun position, with recent hours weighted more. This learns orientation, several arrays, shading by trees or buildings, and the inverter's maximum (output is capped at the highest hourly production seen) from the data alone. No panel configuration is needed.
+- **Not learned:** effects unrelated to the sun position, such as snow on the panels, only enter as an average.
+- **Updates:** the weather history is fetched once (about 0.5 MB) and then topped up daily; it is stored in `.storage/pv_battery_optimizer.<entry_id>.weather`. The model is retrained daily, the weather forecast for the next 3 days is fetched hourly. If Open-Meteo is unreachable, an older forecast is used for up to 6 hours, then planning falls back to the forecast integration.
+- **Privacy and terms:** only HA's home location, rounded to two decimals (about 1 km), is sent. Open-Meteo's free API is for non-commercial use.
+
+**How to choose:** enable the model but keep *PV forecast used for planning* at *Forecast integration* at first. Every evening the day-ahead forecasts of the forecast integration (raw and corrected) and of the model are recorded. After a few days the diagnostics (`pv_forecast.day_ahead_comparison`) show which one is closer to reality; switch accordingly. `pv_forecast.open_meteo_model` additionally contains a backtest over the last 30 days. It is somewhat optimistic, because the archive holds short-range forecasts, while the plan relies on day-ahead ones.
+
+The sensor "PV forecast next 24h" shows the forecast used for planning, with the source and both individual forecasts as attributes.
 
 ### Changing the configuration later
 
@@ -152,6 +168,11 @@ To compare, go to *Settings → Devices & services → PV Battery Optimizer → 
   - Hours the plan covers only partly (e.g. the first hour of a plan made at 21:07) are listed with `partial: true` and left out of the summary.
 - `current_plan`: the current plan, slot by slot.
 - `pv_correction`: the learned PV correction factors and how many samples they're based on.
+- `pv_forecast`:
+  - `source_used`: the PV forecast the current plan is based on.
+  - `errors`: current problems of the forecast integration or the Open-Meteo model.
+  - `open_meteo_model`: training status, last error and a backtest over the last 30 days (only if enabled).
+  - `day_ahead_comparison`: the forecasts made at 18:00 for the next day compared with the actual production. Per source (`forecast`, `forecast_corrected`, `open_meteo`), over all its hours and over the hours all sources have in common. Lower `mae_kwh` (mean absolute error per hour) and `relative_error` are better; `bias_kwh` > 0 means the forecast is too high.
 - Configuration and options (password removed), live evcc values, and the desired and applied battery mode.
 
 What to look for:
@@ -216,11 +237,10 @@ For problems, filter the HA log for `pv_battery_optimizer`.
 
 ## Notes and limitations
 
-- **PV correction starts from zero.** HA doesn't store past Forecast.Solar forecasts, so the correction can only learn from installation onwards and needs a few weeks to become meaningful.
+- **PV correction starts from zero.** HA doesn't store past Forecast.Solar forecasts, so the correction can only learn from installation onwards and needs a few weeks to become meaningful. The Open-Meteo model doesn't have this problem.
 - **Forecast.Solar timestamps:** the raw API labels each value with the end of its period. HA's Forecast.Solar integration converts this to period start, which is what this integration expects (partial sunrise/sunset periods are handled).
 - **Planning horizon:** prices for the next day are published in the early afternoon. Before that, the plan ends at midnight. The plan is recalculated every 5 min and picks up new prices automatically.
 - **No grid power limit:** EV and battery may charge from the grid at the same time.
-- **Possible extension:** a PV model trained on Open-Meteo's archived weather forecasts against your actual production. It would use the full production history immediately and could learn weather-dependent errors and system quirks (shading, snow, inverter clipping). This requires sending the location (latitude/longitude) to Open-Meteo.
 
 ## Tests
 
@@ -230,8 +250,8 @@ uv pip install -p .venv -r requirements_test.txt
 .venv/bin/pytest
 ```
 
-- `tests/test_optimizer.py`, `tests/test_forecast.py`, `tests/test_evaluation.py`: optimizer, forecasting and plan evaluation (pure Python, also run with `python3 -m unittest discover -s tests -p 'test_[ofe]*.py'`).
-- `tests/test_integration.py`: config/options flow, setup, sensors, control loop, evening plan snapshot and diagnostics against a real HA core with mocked evcc API, PV forecast and recorder statistics.
+- `tests/test_optimizer.py`, `tests/test_forecast.py`, `tests/test_evaluation.py`, `tests/test_pvmodel.py`: optimizer, forecasting, plan evaluation and the PV model (pure Python, the PV model is tested against a simulated system with two arrays, morning shading and inverter clipping).
+- `tests/test_integration.py`: config/options flow, setup, sensors, control loop, evening plan snapshot, diagnostics and the Open-Meteo model (including outage fallback) against a real HA core with mocked evcc API, Open-Meteo, PV forecast and recorder statistics.
 
 ### Continuous integration
 
