@@ -16,6 +16,10 @@ from .pvmodel import compare_day_ahead
 TO_REDACT = {CONF_PASSWORD}
 
 
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: OptimizerConfigEntry
 ) -> dict[str, Any]:
@@ -61,6 +65,13 @@ async def async_get_config_entry_diagnostics(
         "pv_forecast": {
             "source_used": data.pv_source if data else None,
             "errors": coordinator.pv_errors,
+            "next_24h_kwh": None
+            if data is None
+            else {
+                "used": round(data.pv_next_24h_kwh, 2),
+                "forecast_integration": _round(data.pv_forecast_24h_kwh),
+                "open_meteo_model": _round(data.pv_open_meteo_24h_kwh),
+            },
             "open_meteo_model": coordinator.weather_pv.diagnostics()
             if coordinator.weather_pv
             else None,

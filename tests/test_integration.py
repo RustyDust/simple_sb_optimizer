@@ -440,6 +440,9 @@ async def test_open_meteo_model_used_for_planning(
     assert len(urls) == 2
 
     diag = await async_get_config_entry_diagnostics(hass, setup_entry)
+    totals = diag["pv_forecast"]["next_24h_kwh"]
+    assert totals["open_meteo_model"] == pv.attributes["open_meteo_model_kwh"]
+    assert totals["used"] == pytest.approx(totals["open_meteo_model"], abs=0.01)
     model = diag["pv_forecast"]["open_meteo_model"]
     assert model["training_hours"] > 1000
     assert model["last_error"] is None

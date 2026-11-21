@@ -171,6 +171,7 @@ To compare, go to *Settings → Devices & services → PV Battery Optimizer → 
 - `pv_forecast`:
   - `source_used`: the PV forecast the current plan is based on.
   - `errors`: current problems of the forecast integration or the Open-Meteo model.
+  - `next_24h_kwh`: PV forecast for the next 24 h: `used` for planning (including the safety factor), `forecast_integration` (with learned correction) and `open_meteo_model` (`null` if off or unavailable).
   - `open_meteo_model`: training status, last error and a backtest over the last 30 days (only if enabled).
   - `day_ahead_comparison`: the forecasts made at 18:00 for the next day compared with the actual production. Per source (`forecast`, `forecast_corrected`, `open_meteo`), over all its hours and over the hours all sources have in common. Lower `mae_kwh` (mean absolute error per hour) and `relative_error` are better; `bias_kwh` > 0 means the forecast is too high.
 - Configuration and options (password removed), live evcc values, and the desired and applied battery mode.
