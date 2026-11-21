@@ -5,3 +5,6 @@ __pycache__/
 .coverage
 .claude/settings.local.json
 .DS_Store
+
+# downloaded HA diagnostics (may contain personal data)
+diagnostics/
